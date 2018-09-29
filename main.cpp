@@ -1,14 +1,29 @@
-#include <cstdlib>
 #include <iostream>
-#include <fstream>
+#include <string>
+#include <sstream>
+#include <iomanip>
+#include <stdexcept>
 #include <vector>
+#include <cmath>
+#include <thread>
+#include <boost/lockfree/queue.hpp>
+#include <opencv2/core/utility.hpp>
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+#include <opencv2/calib3d/calib3d.hpp>
+#include <opencv2/stitching.hpp>
+#include <omp.h>
+#include <time.h>
+
+#include <cstdlib>
+#include <fstream>
 #include <memory>
+
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 
-#include <opencv2/opencv.hpp>
-
-#include "matrix.hpp"
+#include "OmnidirectionalCamera.hpp"
 
 #define X_DIV 100
 #define Y_DIV 50
@@ -118,10 +133,10 @@ void projection(double dx, double dy, double *tx, double *ty, double clip)
 	double r = sqrt(pow(d_x, 2) + pow(d_y, 2));
 	double Vec0[3] = {0, 0, 1.0};
 	double VecX[3];
-	matrix::rot_x(Vec0, VecX, theta);
+	OmnidirectionalCamera::matrix::rot_x(Vec0, VecX, theta);
 	double VecY[3];
-	matrix::rot_y(VecX, VecY, phi);
-	double r_angle = matrix::inner(Vec0, VecY);
+	OmnidirectionalCamera::matrix::rot_y(VecX, VecY, phi);
+	double r_angle = OmnidirectionalCamera::matrix::inner(Vec0, VecY);
 	//forcus length
 	double fr = sqrt(2) * sin(r_angle / 2);
 
