@@ -1,0 +1,1 @@
+gst-launch-1.0 -v v4l2src ! video/x-raw,width=2176,height=1088 ! videoscale method=nearest-neighbour ! video/x-raw,width=1920,height=1080 ! omxh264enc target-bitrate=7000000 control-rate=variable ! video/x-h264,stream-format=byte-stream, profile=high ! h264parse ! rtph264pay ! udpsink host=192.168.3.6 port=5005 sync=false
