@@ -28,268 +28,131 @@
 #define X_DIV 100
 #define Y_DIV 50
 
-#define WIDTH 2048
-#define HEIGHT 1024
-
+#define WIDTH 1920
+#define HEIGHT 960
 #define CLIP 0.9
 //texture name
-GLuint texName;
+GLuint texName[2];
 
 //pbo ID
 GLuint pboID;
 
-//frame buffer
-GLuint fbID, rbID;
-
-cv::Mat getScreen()
-{
-	int width = WIDTH;
-	int height = HEIGHT;
-
-	int type = CV_8UC4;		  // またはCV_8UC3
-	int format = GL_BGRA_EXT; // またはGL_RGB, GL_RGBA, GL_BGR_EXT
-
-	cv::Mat out_img(cv::Size(width, height), type);
-
-	glReadBuffer(GL_COLOR_ATTACHMENT0);
-
-	//glReadBuffer(GL_FRONT);
-	glBindBuffer(GL_PIXEL_PACK_BUFFER, pboID);
-	glBindFramebuffer(GL_READ_FRAMEBUFFER, fbID);
-	//	glBindFramebuffer(GL_FRAMEBUFFER, fbID);
-	glReadPixels(0, 0, width, height, format, GL_UNSIGNED_BYTE, 0);
-	// Send PBO to main memory
-	GLubyte *pboPtr = (GLubyte *)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
-	if (pboPtr)
-	{
-		std::cout << "ok" << std::endl;
-		memcpy(out_img.data, pboPtr, WIDTH * HEIGHT * 4);
-		glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-	}
-	glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-
-	cv::flip(out_img, out_img, 0);
-
-	return out_img;
-}
-
 /*
-** 初期化
+** set up texture
 */
-static void setTexture(cv::Mat textMat)
+static void setTexture(int key, cv::Mat textMat)
 {
-	glGenTextures(1, &texName);
-	glBindTexture(GL_TEXTURE_2D, texName);
+	glGenTextures(1, &texName[key]);
+	glBindTexture(GL_TEXTURE_2D, texName[key]);
 
-	/* テクスチャ画像はバイト単位に詰め込まれている */
+	// texsture is straged as byte data
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-	/* テクスチャの割り当て */
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, textMat.cols, textMat.rows, 0,
-				 GL_RGB, GL_UNSIGNED_BYTE, textMat.data);
-	/* テクスチャを拡大・縮小する方法の指定 */
+	// assing texture
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, textMat.cols, textMat.rows, 0, GL_RGB, GL_UNSIGNED_BYTE, textMat.data);
+	//	Deformation parametor
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 }
 
-/*
-** テクスチャ座標への変換
-*/
-void projection(double dx, double dy, double *tx, double *ty, double clip)
+/*****************************************************
+* projection2sphere
+* convert plane coordinates to Spherical coordinates
+* dx : plane coordinates x
+* dx : plane coordinates y
+* *tx : Spherical coordinates x
+* *ty : Spherical coordinates y
+* *tz : Spherical coordinates z
+*******************************************************/
+void projection2sphere(double dx, double dy, double *tx, double *ty, double *tz)
 {
-
-	double angle_rate = (double)180.0 / 180.0;
-	double radian_angle = M_PI * angle_rate;
-
-	double px = (dx - 0.5) * clip;
-	double py = (dy - 0.5) * clip;
-
-	if (px == 0)
-	{
-		px += 0.00001;
-	}
-	if (py == 0)
-	{
-		py += 0.00001;
-	}
-
-	//angles
-	double theta = (px / 0.5) * (radian_angle / 2.0);
-	double phi = (py / 0.5) * (radian_angle / 2.0);
-
-	double tmp = M_PI;
-	if (theta / angle_rate < -M_PI / 2 || M_PI / 2 < theta / angle_rate)
-	{
-		std::cout << "theta range error" << std::endl;
-	}
-
-	if (phi / angle_rate < -M_PI / 2 || M_PI / 2 < phi / angle_rate)
-	{
-		std::cout << "phi range error" << std::endl;
-	}
-	//point on orthogonal projection
-	double d_x = sin(theta / angle_rate) * cos(phi / angle_rate) * (0.5 / 2);
-	double d_y = sin(phi / angle_rate) * (0.5 / 2);
-	double r = sqrt(pow(d_x, 2) + pow(d_y, 2));
-	double Vec0[3] = {0, 0, 1.0};
-	double VecX[3];
-	OmnidirectionalCamera::matrix::rot_x(Vec0, VecX, theta);
-	double VecY[3];
-	OmnidirectionalCamera::matrix::rot_y(VecX, VecY, phi);
-	double r_angle = OmnidirectionalCamera::matrix::inner(Vec0, VecY);
-	//forcus length
-	double fr = sqrt(2) * sin(r_angle / 2);
-
-	//fit to image width
-	fr = fr / angle_rate;
-
-	double rate = fr / (r / (0.5));
-
-	double c_x = d_x * rate;
-	double c_y = d_y * rate;
-
-	*tx = c_x + 0.5;
-	*ty = c_y + 0.5;
+	double phi = dx * M_PI * 2.0;
+	double theta = asin((dy - 0.5) * 2.0);
+	double px = (cos(phi) / 2.0) * cos(theta) + 0.5;
+	double pz = (sin(phi)) * cos(theta);
+	*tx = px - 0.5;
+	*ty = dy - 0.5;
+	*tz = pz / 2;
 }
 
 /*
-** シーンの描画
+** Genrate sphere mesh
 */
 static void GenerateMesh(GLfloat mesh[], GLfloat UVmesh[])
 {
 
-	double step = 1.0 / (float)X_DIV;
-
+	double bad = 1.011;
 	/*メッシュ作成*/
-	for (int y = 0; y < Y_DIV - 1; y++)
+	for (int y = 0; y < Y_DIV; y++)
 	{
 		//odd line
-		for (int x = 0; x < X_DIV; x++)
+		for (int x = 0; x <= X_DIV; x++)
 		{
 			GLfloat posx = (GLfloat)x / (GLfloat)X_DIV;
 			GLfloat posyA = (GLfloat)y / (GLfloat)Y_DIV;
 			GLfloat posyB = (GLfloat)(y + 1) / (GLfloat)Y_DIV;
 
-			int pt = (y * X_DIV + x) * 4;
+			int pt = (y * X_DIV + x) * 6;
+			int UVpt = (y * X_DIV + x) * 4;
 
-			double txA, tyA;
-			double txB, tyB;
+			double txA, tyA, tzA;
+			double txB, tyB, tzB;
+			projection2sphere(posx * bad, posyA, &txA, &tyA, &tzA);
+			projection2sphere(posx * bad, posyB, &txB, &tyB, &tzB);
 
-			if (posx < 0.5)
-			{
-				mesh[pt + 0] = posx * WIDTH;
-				mesh[pt + 1] = posyA * HEIGHT;
-				mesh[pt + 2] = posx * WIDTH;
-				mesh[pt + 3] = posyB * HEIGHT;
+			mesh[pt + 0] = txA * HEIGHT;
+			mesh[pt + 1] = tyA * HEIGHT;
+			mesh[pt + 2] = tzA * HEIGHT;
+			mesh[pt + 3] = txB * HEIGHT;
+			mesh[pt + 4] = tyB * HEIGHT;
+			mesh[pt + 5] = tzB * HEIGHT;
 
-				projection(posx * 2, posyA, &txA, &tyA, CLIP);
-				projection(posx * 2, posyB, &txB, &tyB, CLIP);
-
-				UVmesh[pt + 0] = txA / 2.0;
-				UVmesh[pt + 1] = tyA;
-				UVmesh[pt + 2] = txB / 2.0;
-				UVmesh[pt + 3] = tyB;
-			}
-			else if (posx >= 0.5)
-			{
-				mesh[pt + 0] = (posx - step) * WIDTH;
-				mesh[pt + 1] = posyA * HEIGHT;
-				mesh[pt + 2] = (posx - step) * WIDTH;
-				mesh[pt + 3] = posyB * HEIGHT;
-
-				projection((posx - 0.5) * 2, posyA, &txA, &tyA, CLIP);
-				projection((posx - 0.5) * 2, posyB, &txB, &tyB, CLIP);
-
-				UVmesh[pt + 0] = txA / 2.0 + 0.5;
-				UVmesh[pt + 1] = tyA;
-				UVmesh[pt + 2] = txB / 2.0 + 0.5;
-				UVmesh[pt + 3] = tyB;
-			}
+			UVmesh[UVpt + 0] = posx;
+			UVmesh[UVpt + 1] = posyA;
+			UVmesh[UVpt + 2] = posx;
+			UVmesh[UVpt + 3] = posyB;
 		}
 		y++;
 
 		//even line
-		for (int x = 0; x < X_DIV; x++)
+		for (int x = 0; x <= X_DIV; x++)
 		{
 			GLfloat posx = (GLfloat)(X_DIV - x - 1) / (GLfloat)X_DIV;
 			GLfloat posyA = (GLfloat)y / (GLfloat)Y_DIV;
 			GLfloat posyB = (GLfloat)(y + 1) / (GLfloat)Y_DIV;
 
-			int pt = (y * X_DIV + x) * 4;
-			mesh[pt + 0] = posx * WIDTH;
-			mesh[pt + 1] = posyA * HEIGHT;
-			mesh[pt + 2] = posx * WIDTH;
-			mesh[pt + 3] = posyB * HEIGHT;
+			int pt = (y * X_DIV + x) * 6;
+			int UVpt = (y * X_DIV + x) * 4;
 
-			double txA, tyA;
-			double txB, tyB;
+			double txA, tyA, tzA;
+			double txB, tyB, tzB;
+			projection2sphere(posx * bad, posyA, &txA, &tyA, &tzA);
+			projection2sphere(posx * bad, posyB, &txB, &tyB, &tzB);
 
-			if (posx < 0.5)
-			{
-				mesh[pt + 0] = posx * WIDTH;
-				mesh[pt + 1] = posyA * HEIGHT;
-				mesh[pt + 2] = posx * WIDTH;
-				mesh[pt + 3] = posyB * HEIGHT;
+			mesh[pt + 0] = txA * HEIGHT;
+			mesh[pt + 1] = tyA * HEIGHT;
+			mesh[pt + 2] = tzA * HEIGHT;
+			mesh[pt + 3] = txB * HEIGHT;
+			mesh[pt + 4] = tyB * HEIGHT;
+			mesh[pt + 5] = tzB * HEIGHT;
 
-				projection(posx * 2, posyA, &txA, &tyA, CLIP);
-				projection(posx * 2, posyB, &txB, &tyB, CLIP);
-
-				UVmesh[pt + 0] = txA / 2.0;
-				UVmesh[pt + 1] = tyA;
-				UVmesh[pt + 2] = txB / 2.0;
-				UVmesh[pt + 3] = tyB;
-			}
-			else if (posx >= 0.5)
-			{
-				mesh[pt + 0] = (posx - step) * WIDTH;
-				mesh[pt + 1] = posyA * HEIGHT;
-				mesh[pt + 2] = (posx - step) * WIDTH;
-				mesh[pt + 3] = posyB * HEIGHT;
-
-				projection((posx - 0.5) * 2, posyA, &txA, &tyA, CLIP);
-				projection((posx - 0.5) * 2, posyB, &txB, &tyB, CLIP);
-
-				UVmesh[pt + 0] = txA / 2.0 + 0.5;
-				UVmesh[pt + 1] = tyA;
-				UVmesh[pt + 2] = txB / 2.0 + 0.5;
-				UVmesh[pt + 3] = tyB;
-			}
+			UVmesh[UVpt + 0] = posx;
+			UVmesh[UVpt + 1] = posyA;
+			UVmesh[UVpt + 2] = posx;
+			UVmesh[UVpt + 3] = posyB;
 		}
 	}
 }
 //Vertex mesh
-GLfloat mesh[X_DIV * Y_DIV * 4 + 10];
+GLfloat mesh[X_DIV * Y_DIV * 6 + 10];
 GLfloat UVmesh[X_DIV * Y_DIV * 4 + 10];
-
-//display
-void display2Texture(void)
-{
-
-	glClear(GL_COLOR_BUFFER_BIT);
-	glBindTexture(GL_TEXTURE_2D, texName);
-	//begin
-	glEnable(GL_TEXTURE_2D);
-	glEnableClientState(GL_VERTEX_ARRAY);
-	glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-
-	//drawing
-
-	glVertexPointer(2, GL_FLOAT, 0, mesh);
-	glTexCoordPointer(2, GL_FLOAT, 0, UVmesh);
-	glDrawArrays(GL_TRIANGLE_STRIP, 0, X_DIV * Y_DIV * 2);
-
-	//end
-	glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-	glDisableClientState(GL_VERTEX_ARRAY);
-	glDisable(GL_TEXTURE_2D);
-}
 
 //display
 void display(void)
 {
 
 	glClear(GL_COLOR_BUFFER_BIT);
-	glBindTexture(GL_TEXTURE_2D, texName);
+	glBindTexture(GL_TEXTURE_2D, texName[1]);
+
 	//begin
 	glEnable(GL_TEXTURE_2D);
 	glEnableClientState(GL_VERTEX_ARRAY);
@@ -297,7 +160,7 @@ void display(void)
 
 	//drawing
 
-	glVertexPointer(2, GL_FLOAT, 0, mesh);
+	glVertexPointer(3, GL_FLOAT, 0, mesh);
 	glTexCoordPointer(2, GL_FLOAT, 0, UVmesh);
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, X_DIV * Y_DIV * 2);
 
@@ -307,48 +170,34 @@ void display(void)
 	glDisable(GL_TEXTURE_2D);
 }
 
-void InitTextureBuffer(void)
-{
-	// renderbuffer object の生成
-	glGenRenderbuffers(1, &rbID);
-	glBindRenderbuffer(GL_RENDERBUFFER, rbID);
-
-	// 第二引数は 色 GL_RGB, GL_RGBA, デプス値 GL_DEPTH_COMPONENT, ステンシル値 GL_STENCIL_INDEX　などを指定できる
-	glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA, WIDTH, HEIGHT);
-
-	// framebuffer object の生成
-	glGenFramebuffers(1, &fbID);
-	glBindFramebuffer(GL_FRAMEBUFFER, fbID);
-
-	// renderbufferをframebuffer objectに結びつける
-	// 第二引数は GL_COLOR_ATTACHMENTn, GL_DEPTH_ATTACHMENT, GL_STENCIL_ATTACHMENT など
-	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rbID);
-
-	glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
-
-//pbo buffer
-
-void InitPBOBuffer(void)
-{
-	const int DataSize = WIDTH * HEIGHT * 4;
-	glGenBuffers(1, &pboID);
-	glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pboID);
-	glBufferData(GL_PIXEL_UNPACK_BUFFER, DataSize, NULL, GL_STREAM_READ);
-	glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-}
-
-void DeletePBOBuffer(void)
-{
-	glBindBuffer(GL_ARRAY_BUFFER, pboID);
-	glDeleteBuffers(1, &pboID);
-	pboID = 0;
-}
-
 //main
 int main(int argc, char *argv[])
 {
 
+	std::cout << "ESC to Exit " << std::endl;
+	std::cout << "******************stitching para metors******************" << std::endl;
+	std::cout << "vdiff: Vertical difference of to fish eye image " << std::endl;
+	std::cout << "key  [1]++ / [Q]-- " << std::endl;
+	std::cout << "clip: clipping width of fhish eye image edge" << std::endl;
+	std::cout << "key [2]++ / [W]-- " << std::endl;
+	std::cout << "blend width : Alphablend width of stitching " << std::endl;
+	std::cout << "key [3]++ / [E}-- " << std::endl;
+	std::cout << "**********************************************************" << std::endl;
+
+	//generate remapper
+	int clip = 17;								 //clip range
+	int vdiff = 0;								 //vertical diffarence offset
+	int blendWidth = 19;						 //alpha blend width to stitting
+	int mode = OmnidirectionalCamera::EQUISOLID; //set fisheye lens type
+
+	cv::Rect roi = cv::Rect(clip, clip, 960 - (2 * clip), 960 - (2 * clip));
+
+	cv::Mat yMap(roi.width, roi.height, CV_32FC1);
+	cv::Mat xMap(roi.width, roi.height, CV_32FC1);
+
+	OmnidirectionalCamera::PanoramaGpuRemapperGen(roi, xMap, yMap, mode, 180);
+
+	// initalize Gstreamer
 	cv::VideoCapture streaming;
 	streaming.open("gst-launch-1.0 -v udpsrc port=5005 ! application/x-rtp,media=video,encoding-name=H264 ! queue ! rtph264depay ! avdec_h264 ! videoconvert ! appsink");
 
@@ -358,33 +207,56 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
-	//check initalize
+	cv::Mat tmp;
+	streaming.read(tmp);
+	cv::Mat src(tmp.cols, tmp.rows, tmp.type());
+
+	//Initialize glfw
 	if (glfwInit() == GL_FALSE)
 	{
 		std::cout << "error" << std::endl;
 		return 0;
 	}
 
-	//glfwWindowHint(GLFW_VISIBLE, 0);
+	//create
+	GLFWwindow *const panorama(glfwCreateWindow(WIDTH, HEIGHT, "Panorama View", NULL, NULL));
+	GLFWwindow *const sphere(glfwCreateWindow(HEIGHT, HEIGHT, "VR View", NULL, panorama));
 
-	GLFWwindow *const window(glfwCreateWindow(WIDTH, HEIGHT, "Hello", NULL, NULL));
-	if (window == NULL)
+	if (panorama == NULL || sphere == NULL)
 	{
 		std::cout << "error" << std::endl;
 		return 1;
 	}
 
-	// プログラム終了時の処理を登録する
+	// assing terminate operation
 	atexit(glfwTerminate);
 
-	glfwSetWindowSize(window, WIDTH, HEIGHT);
+	//set window size
+	glfwSetWindowSize(panorama, WIDTH, HEIGHT);
+	glfwSetWindowSize(sphere, HEIGHT, HEIGHT);
 
+	//configure window parametor
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
 	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-	glfwMakeContextCurrent(window);
+	//camera capture for dummy data
+	cv::Mat textMat;
+	streaming >> textMat;
+	cv::flip(textMat, textMat, 0);
+	cv::cvtColor(textMat, textMat, CV_BGR2RGB);
+
+	// panorama configure
+	glfwMakeContextCurrent(panorama);
+	// 垂直同期のタイミンを待つ
+	glfwSwapInterval(1);
+	// 描画範囲の指定
+	glMatrixMode(GL_PROJECTION);
+	glLoadIdentity();
+	glOrtho(-0.0f, WIDTH, 0.0f, HEIGHT, -1.0f, 1.0f);
+	glViewport(0, 0, WIDTH, HEIGHT);
+	glClearColor(0.0f, 1.0f, 1.0f, 0.0f);
 
 	glewExperimental = GL_TRUE;
 	if (glewInit() != GLEW_OK)
@@ -393,60 +265,196 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	// 垂直同期のタイミングを待つ
+	GenerateMesh(mesh, UVmesh);
+	setTexture(0, textMat);
+
+	/**************sphare context***************/
+	glfwMakeContextCurrent(sphere);
+	//垂直同期のタイミンを待つ
 	glfwSwapInterval(1);
 
-	// 描画範囲の指定
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
-	glOrtho(0.0f, WIDTH, 0.0f, HEIGHT, -1.0f, 1.0f);
-	glViewport(0, 0, WIDTH, HEIGHT);
-
+	glOrtho(-HEIGHT, HEIGHT, -HEIGHT, HEIGHT, -HEIGHT, HEIGHT);
+	glViewport(-HEIGHT / 2, HEIGHT / 2, -HEIGHT / 2, HEIGHT / 2);
 	glClearColor(0.0f, 1.0f, 1.0f, 0.0f);
 
-	GenerateMesh(mesh, UVmesh);
+	glMatrixMode(GL_MODELVIEW);
+	glLoadIdentity();
+	glEnable(GL_DEPTH_TEST);
+	glDisable(GL_CULL_FACE);
 
-	//	cv::VideoCapture cap(0);
+	glTranslatef(0.0f, 0.0f, 1000);
+	setTexture(1, textMat);
 
-	//camera capture
-	cv::Mat textMat;
 	streaming >> textMat;
-	cv::flip(textMat, textMat, 0);
-	cv::cvtColor(textMat, textMat, CV_BGR2RGB);
-	setTexture(textMat);
-	InitPBOBuffer();
-	InitTextureBuffer();
 
-	int i = 0;
-	while (glfwWindowShouldClose(window) == GL_FALSE)
+	while (glfwWindowShouldClose(panorama) == GL_FALSE)
 	{
-		i++;
+		/*******************key control************/
+		//1
+		if (glfwGetKey(panorama, 49) == GLFW_PRESS)
+		{
+			vdiff++;
+			std::cout << "vertical diffarence:" << vdiff << std::endl;
+		}
+		//Q
+		if (glfwGetKey(panorama, 81) == GLFW_PRESS)
+		{
+			if (vdiff > 0)
+				vdiff--;
+			std::cout << "vertical diffarence:" << vdiff << std::endl;
+		}
+		//2
+		if (glfwGetKey(panorama, 50) == GLFW_PRESS)
+		{
+			clip++;
+			std::cout << "clip widht:" << clip << std::endl;
+		}
+		//W
+		if (glfwGetKey(panorama, 87) == GLFW_PRESS)
+		{
+			if (clip > 0)
+				clip--;
+			std::cout << "clip widht:" << clip << std::endl;
+		}
+		//3
+		if (glfwGetKey(panorama, 51) == GLFW_PRESS)
+		{
+			blendWidth++;
+			std::cout << "blendWididth:" << blendWidth << std::endl;
+		}
+		//E
+		if (glfwGetKey(panorama, 69) == GLFW_PRESS)
+		{
+			if (blendWidth >= 0)
+				blendWidth--;
+			std::cout << "blendWididth:" << blendWidth << std::endl;
+		}
+
+		//conver Fish eye image to Panorama
 		streaming >> textMat;
 		cv::flip(textMat, textMat, 0);
 		cv::cvtColor(textMat, textMat, CV_BGR2RGB);
 
-		//setTexture(textMat);
-		glBindTexture(GL_TEXTURE_2D, texName);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, textMat.cols, textMat.rows, 0, GL_RGB, GL_UNSIGNED_BYTE, textMat.data);
+		//divide stereo image to left and right
+		cv::Mat src(textMat);
+		cv::Mat clipedRight(src, cv::Rect(clip, clip, roi.width, roi.height));
+		cv::Mat clipedLeft(src, cv::Rect(clip + (src.cols / 2), clip, roi.width, roi.height));
 
+		cv::Mat resultRight(xMap.rows, xMap.cols, src.type());
+		cv::Mat resultLeft(xMap.rows, xMap.cols, src.type());
+
+		cv::remap(clipedRight, resultRight, xMap, yMap, cv::INTER_LINEAR);
+		cv::remap(clipedLeft, resultLeft, xMap, yMap, cv::INTER_LINEAR);
+		cv::flip(clipedRight, clipedRight, 1);
+
+		cv::Mat Joind(resultRight.rows - vdiff, (resultRight.cols - blendWidth) * 2, resultRight.type());
+		OmnidirectionalCamera::RingStitch(resultRight, resultLeft, Joind, vdiff, blendWidth);
+
+		/**************panorama***************/
+		glfwMakeContextCurrent(panorama);
+
+		//display panorama image as polygon
+		glBindTexture(GL_TEXTURE_2D, texName[0]);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, Joind.cols, Joind.rows, 0, GL_RGB, GL_UNSIGNED_BYTE, Joind.data);
 		glClear(GL_COLOR_BUFFER_BIT);
-
-		//	glBindFramebuffer(GL_FRAMEBUFFER, fbID);
 		glDrawBuffer(GL_COLOR_ATTACHMENT0);
-		display();
 
-		glfwSwapBuffers(window);
-		cv::Mat tmp = getScreen();
+		//rectangle plygon
+		glEnable(GL_TEXTURE_2D);
+		glNormal3d(0.0, 0.0, 1.0);
+		glBegin(GL_TRIANGLE_STRIP);
 
-		cv::Mat send;
-		cv::resize(tmp, send, cv::Size(2048, 1024), cv::INTER_CUBIC);
+		glTexCoord2d(0.0f, 0.0f);
+		glVertex3d(0, 0, 0.0);
 
-		if (i == 1000)
-		{
-			cv::imwrite("window.jpg", tmp);
+		glTexCoord2d(1.0f, 0.0f);
+		glVertex3d(WIDTH, 0, 0.0);
+
+		glTexCoord2d(0.0f, 1.0f);
+		glVertex3d(0, HEIGHT, 0.0);
+
+		glTexCoord2d(1.0f, 1.0f);
+		glVertex3d(WIDTH, HEIGHT, 0.0);
+
+		glEnd();
+
+		glfwSwapBuffers(panorama);
+
+		if (glfwGetKey(panorama, GLFW_KEY_ESCAPE) == GLFW_PRESS)
 			break;
+
+		/**************:sphare **********/
+		static double last_xpos, last_ypos;
+		static double xpos, ypos;
+
+		int button = glfwGetMouseButton(sphere, GLFW_MOUSE_BUTTON_LEFT);
+
+		static int phi = 0, theta = 0;
+
+		//mouse position
+		static int onflag = 0;
+		if (button)
+		{
+			glfwGetCursorPos(sphere, &xpos, &ypos);
+			std::cout << "x:" << xpos << "y:" << ypos << std::endl;
+			std::cout << "phi" << phi << "theta" << theta << std::endl;
+
+			//clided
+			if (onflag == 1)
+			{
+				if (0 <= xpos && xpos < HEIGHT)
+				{
+					int x_diff = (double)(last_xpos - xpos) / (double)WIDTH * 360;
+					phi += x_diff;
+				}
+
+				if (0 <= ypos && ypos < HEIGHT)
+				{
+					int y_diff = (double)(last_ypos - ypos) / (double)WIDTH * 360;
+					theta += y_diff;
+					if (theta < -90)
+						theta = -90;
+					if (theta > 90)
+						theta = 90;
+				}
+			}
+			onflag = 1;
+			last_xpos = xpos;
+			last_ypos = ypos;
 		}
-		//	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		else
+		{
+			onflag = 0;
+		}
+
+		static int angle = 0;
+		angle++;
+		// display panorama image as VRview
+		glfwMakeContextCurrent(sphere);
+		glLoadIdentity();
+		glTranslatef(0, 0, 500);
+		glScalef(3.0f, 3.0f, 3.0f);
+
+		glRotatef((GLfloat)theta, 1.0f, 0.0f, 0.0f);
+		glRotatef((GLfloat)phi, 0.0f, 1.0f, 0.0f);
+
+		glDisable(GL_CULL_FACE);
+
+		glBindTexture(GL_TEXTURE_2D, texName[1]);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, Joind.cols, Joind.rows, 0, GL_RGB, GL_UNSIGNED_BYTE, Joind.data);
+		glDisable(GL_TEXTURE_2D);
+
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+		glEnable(GL_DEPTH_TEST);
+
+		glDrawBuffer(GL_COLOR_ATTACHMENT0);
+		glEnable(GL_TEXTURE_2D);
+		display();
+		glDisable(GL_TEXTURE_2D);
+		glfwSwapBuffers(sphere);
+		glfwPollEvents();
 	}
 	glfwTerminate();
 	return 0;
