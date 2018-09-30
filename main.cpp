@@ -220,7 +220,7 @@ int main(int argc, char *argv[])
 
 	//create
 	GLFWwindow *const panorama(glfwCreateWindow(WIDTH, HEIGHT, "Panorama View", NULL, NULL));
-	GLFWwindow *const sphere(glfwCreateWindow(HEIGHT, HEIGHT, "VR View", NULL, panorama));
+	GLFWwindow *const sphere(glfwCreateWindow(HEIGHT, HEIGHT + (HEIGHT / 2), "VR View", NULL, panorama));
 
 	if (panorama == NULL || sphere == NULL)
 	{
@@ -345,8 +345,11 @@ int main(int argc, char *argv[])
 		cv::Mat resultRight(xMap.rows, xMap.cols, src.type());
 		cv::Mat resultLeft(xMap.rows, xMap.cols, src.type());
 
-		cv::remap(clipedRight, resultRight, xMap, yMap, cv::INTER_LINEAR);
-		cv::remap(clipedLeft, resultLeft, xMap, yMap, cv::INTER_LINEAR);
+		//		cv::remap(clipedRight, resultRight, xMap, yMap, cv::INTER_LINEAR);
+		//		cv::remap(clipedRight, resultRight, xMap, yMap, cv::INTER_LINEAR);
+		cv::remap(clipedLeft, resultLeft, xMap, yMap, cv::INTER_CUBIC);
+		cv::remap(clipedRight, resultRight, xMap, yMap, cv::INTER_CUBIC);
+
 		cv::flip(clipedRight, clipedRight, 1);
 
 		cv::Mat Joind(resultRight.rows - vdiff, (resultRight.cols - blendWidth) * 2, resultRight.type());
@@ -398,8 +401,6 @@ int main(int argc, char *argv[])
 		if (button)
 		{
 			glfwGetCursorPos(sphere, &xpos, &ypos);
-			std::cout << "x:" << xpos << "y:" << ypos << std::endl;
-			std::cout << "phi" << phi << "theta" << theta << std::endl;
 
 			//clided
 			if (onflag == 1)
