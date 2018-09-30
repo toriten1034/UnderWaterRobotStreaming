@@ -190,7 +190,7 @@ int main(int argc, char *argv[])
 	int blendWidth = 19;						 //alpha blend width to stitting
 	int mode = OmnidirectionalCamera::EQUISOLID; //set fisheye lens type
 
-	cv::Rect roi = cv::Rect(clip, clip, 960 - (2 * clip), 960 - (2 * clip));
+	cv::Rect roi = cv::Rect(clip, clip, 736 - (2 * clip), 736 - (2 * clip));
 
 	cv::Mat yMap(roi.width, roi.height, CV_32FC1);
 	cv::Mat xMap(roi.width, roi.height, CV_32FC1);
